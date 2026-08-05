@@ -146,7 +146,8 @@ def _recent_months(n: int = 4, offset: int = 0) -> list:
 
 
 def _build_chart_data(monthly_totals) -> list:
-    months_asc = list(reversed(list(monthly_totals)))
+    months_asc = [m for m in reversed(list(monthly_totals))
+                  if 1 <= int(m["year_month"][5:7]) <= 12]
     incomes  = [abs(m["income"]  or 0) for m in months_asc]
     expenses = [abs(m["expense"] or 0) for m in months_asc]
     max_val  = max(max(incomes, default=0), max(expenses, default=0), 1)

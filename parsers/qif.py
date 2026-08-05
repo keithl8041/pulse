@@ -41,11 +41,15 @@ def _parse_date(raw: str) -> Optional[str]:
     # Remove any trailing time component
     s = s.split(" ")[0]
 
-    # MM/DD/YYYY
+    # MM/DD/YYYY (US) or DD/MM/YYYY (UK) — disambiguate by range
     m = re.match(r"^(\d{1,2})/(\d{1,2})/(\d{4})$", s)
     if m:
-        mm, dd, yyyy = m.group(1), m.group(2), m.group(3)
-        return f"{yyyy}-{int(mm):02d}-{int(dd):02d}"
+        a, b, yyyy = int(m.group(1)), int(m.group(2)), m.group(3)
+        if a > 12:  # first part can't be a month → must be DD/MM/YYYY
+            dd, mm = a, b
+        else:
+            mm, dd = a, b  # assume MM/DD/YYYY (US default)
+        return f"{yyyy}-{mm:02d}-{dd:02d}"
 
     # MM/DD'YY or MM/DD/YY  (Quicken legacy)
     m = re.match(r"^(\d{1,2})[/'](\d{1,2})[/''](\d{2})$", s)

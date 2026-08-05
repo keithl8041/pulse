@@ -199,6 +199,13 @@ def test_parse_uk_hyphen_date():
     assert txns[1].date == "2026-01-10"
 
 
+def test_parse_uk_slash_date_day_first():
+    # UK banks sometimes use DD/MM/YYYY with slashes; day > 12 makes it unambiguous
+    qif = "!Type:Bank\nD31/01/2026\nT-50.00\nPTEST\n^\n"
+    txns = parse(qif)
+    assert txns[0].date == "2026-01-31"
+
+
 def test_parse_account_block_skipped():
     txns = parse(QIF_WITH_ACCOUNT_BLOCK)
     assert len(txns) == 2
