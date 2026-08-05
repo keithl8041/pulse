@@ -217,6 +217,9 @@
   function toggleAddForm() {
     const f = document.getElementById('add-form');
     f.style.display = f.style.display === 'none' ? 'block' : 'none';
+    if (f.style.display === 'block') {
+      toggleNewOwnerInput(document.getElementById('owner-select'));
+    }
   }
 
   function toggleNewOwnerInput(select) {
