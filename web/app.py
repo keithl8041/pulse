@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from flask import Flask, render_template, request, redirect, url_for, jsonify
 from werkzeug.utils import secure_filename
-from web.import_service import TEMP_DIR, detect_pdf, detect_ofx, start_job, get_jobs
+from web.import_service import TEMP_DIR, detect_pdf, detect_ofx, detect_qif, start_job, get_jobs
 
 from persistence.database import get_connection
 from persistence.repositories import (
@@ -146,7 +146,8 @@ def _recent_months(n: int = 4, offset: int = 0) -> list:
 
 
 def _build_chart_data(monthly_totals) -> list:
-    months_asc = list(reversed(list(monthly_totals)))
+    months_asc = [m for m in reversed(list(monthly_totals))
+                  if 1 <= int(m["year_month"][5:7]) <= 12]
     incomes  = [abs(m["income"]  or 0) for m in months_asc]
     expenses = [abs(m["expense"] or 0) for m in months_asc]
     max_val  = max(max(incomes, default=0), max(expenses, default=0), 1)
@@ -662,6 +663,56 @@ def api_resolve_review(txn_id):
     return jsonify({"ok": True, "remaining": remaining})
 
 
+@app.route("/api/review/rule-preview")
+def api_rule_preview():
+    pattern    = request.args.get("pattern", "").strip()
+    match_type = request.args.get("match_type", "contains")
+    if not pattern:
+        return jsonify({"matches": [], "count": 0})
+    with closing(get_connection()) as conn:
+        rows = ReviewQueueRepository(conn).list_open_matching(pattern, match_type)
+    matches = [
+        {"txn_id": r["transaction_id"], "description": r["description"],
+         "date": r["transaction_date"], "amount": r["transaction_amount"],
+         "currency": r["transaction_currency"], "account": r["account_name"]}
+        for r in rows
+    ]
+    return jsonify({"matches": matches, "count": len(matches)})
+
+
+@app.route("/api/review/create-rule-and-resolve", methods=["POST"])
+def api_create_rule_and_resolve():
+    data        = request.get_json() or {}
+    pattern     = (data.get("pattern") or "").strip()
+    match_type  = data.get("match_type", "contains")
+    category_id = data.get("category_id")
+    money_type  = data.get("money_type", "expense")
+    confidence  = data.get("confidence", "high")
+    txn_ids     = data.get("txn_ids", [])
+
+    if not pattern or not txn_ids:
+        return jsonify({"ok": False, "error": "pattern and txn_ids required"}), 400
+
+    with closing(get_connection()) as conn:
+        vr_repo     = VendorRuleRepository(conn)
+        review_repo = ReviewQueueRepository(conn)
+        txn_repo    = TransactionRepository(conn)
+        audit_repo  = AuditLogRepository(conn)
+
+        vr_repo.add_rule(pattern, match_type, category_id or None, money_type, confidence, is_pending=False)
+
+        for txn_id in txn_ids:
+            old_cat = txn_repo.update_categorization(txn_id, category_id, money_type, None)
+            audit_repo.record("transaction", txn_id, "category_id", old_cat, category_id,
+                              "Resolved via rule suggestion")
+            review_repo.resolve_for_transaction(txn_id)
+
+        conn.commit()
+        remaining = review_repo.count_open()
+
+    return jsonify({"ok": True, "resolved": len(txn_ids), "remaining": remaining})
+
+
 @app.route("/categories")
 def categories_view():
     with closing(get_connection()) as conn:
@@ -827,34 +878,45 @@ def api_import_detect():
         file_ext = "pdf"
     elif header[:10].lstrip(b"\xef\xbb\xbf").startswith((b"OFXHEADER", b"<OFX", b"<?xml", b"<?OFX")):
         file_ext = "ofx"
+    elif header.lstrip(b"\xef\xbb\xbf").startswith(b"!"):
+        file_ext = "qif"
     else:
-        # Also accept files whose name ends in .ofx/.qfx even if the leading
-        # bytes don't match the patterns above (some banks omit the header).
+        # Also accept files whose name ends in .ofx/.qfx/.qif even if the
+        # leading bytes don't match the patterns above (some banks omit the header).
         ext = (uploaded.filename or "").rsplit(".", 1)[-1].lower()
         if ext in ("ofx", "qfx"):
             file_ext = "ofx"
+        elif ext == "qif":
+            file_ext = "qif"
         else:
-            return jsonify({"ok": False, "error": "Unrecognised file type — upload a PDF, OFX, or QFX file"}), 400
+            return jsonify({"ok": False, "error": "Unrecognised file type — upload a PDF, OFX, QFX, or QIF file"}), 400
 
     temp_id  = str(uuid.uuid4())
     tmp_path = os.path.join(TEMP_DIR, temp_id + "." + file_ext)
     uploaded.save(tmp_path)
 
-    detection = detect_ofx(tmp_path) if file_ext == "ofx" else detect_pdf(tmp_path)
+    if file_ext == "ofx":
+        detection = detect_ofx(tmp_path)
+    elif file_ext == "qif":
+        detection = detect_qif(tmp_path)
+    else:
+        detection = detect_pdf(tmp_path)
 
     # Auto-match a specific account by last4. For PDF parsers we also filter by
     # statement_format so two accounts at different banks with the same last4
-    # don't collide. For OFX files we can only filter by last4 (OFX works with
-    # any account regardless of statement_format).
+    # don't collide. For OFX files we can only filter by last4; only auto-select
+    # when the match is unique so two accounts sharing a suffix don't cause a
+    # silent mis-filing under the wrong ledger account.
     matched_account_id = None
     last4 = detection.pop("last4", None)
     if last4:
         with closing(get_connection()) as conn:
-            if file_ext == "ofx":
-                row = conn.execute(
+            if file_ext in ("ofx", "qif"):
+                ofx_rows = conn.execute(
                     "SELECT id FROM accounts WHERE account_number_last4=? AND is_active=1",
                     (last4,),
-                ).fetchone()
+                ).fetchall()
+                row = ofx_rows[0] if len(ofx_rows) == 1 else None
             elif detection.get("account_type"):
                 row = conn.execute(
                     "SELECT id FROM accounts WHERE statement_format=? AND account_number_last4=? AND is_active=1",
@@ -925,11 +987,11 @@ def api_import_queue():
     except (ValueError, AttributeError, TypeError):
         return jsonify({"ok": False, "error": "Invalid temp_id"}), 400
 
-    if account_type not in ("hsbc", "chase_bank", "sapphire", "ofx"):
+    if account_type not in ("hsbc", "chase_bank", "sapphire", "ofx", "qif"):
         return jsonify({"ok": False, "error": "Unknown account_type"}), 400
 
     file_ext = data.get("file_ext", "pdf")
-    if file_ext not in ("pdf", "ofx"):
+    if file_ext not in ("pdf", "ofx", "qif"):
         file_ext = "pdf"
 
     tmp_path = os.path.join(TEMP_DIR, temp_id + "." + file_ext)
@@ -1179,6 +1241,22 @@ def reject_vendor_rule(rule_id):
         VendorRuleRepository(conn).deactivate(rule_id)
         conn.commit()
     return redirect(url_for("vendor_rules_view"))
+
+
+@app.route("/vendor-rules/<int:rule_id>/edit", methods=["POST"])
+def edit_vendor_rule(rule_id):
+    data        = request.get_json() or {}
+    pattern     = (data.get("pattern") or "").strip()
+    match_type  = data.get("match_type", "contains")
+    category_id = data.get("category_id") or None
+    money_type  = data.get("money_type", "expense")
+    confidence  = data.get("confidence", "high")
+    if not pattern:
+        return jsonify({"ok": False, "error": "pattern required"}), 400
+    with closing(get_connection()) as conn:
+        VendorRuleRepository(conn).update_rule(rule_id, pattern, match_type, category_id, money_type, confidence)
+        conn.commit()
+    return jsonify({"ok": True})
 
 
 @app.route("/api/vendor-rules/bulk-approve", methods=["POST"])

@@ -25,7 +25,7 @@ from persistence.repositories import (
     AccountRepository, CategoryRepository, VendorRuleRepository, TransactionRepository,
     ReviewQueueRepository, ExchangeRateRepository, SnapshotRepository,
 )
-from parsers import hsbc, chase_bank, chase_sapphire, ofx as ofx_parser
+from parsers import hsbc, chase_bank, chase_sapphire, ofx as ofx_parser, qif as qif_parser
 from services.ingestion import ingest_transactions, flag_fx_sanity_failures
 from services.reconciliation import record_snapshot, format_report
 
@@ -177,11 +177,17 @@ def ingest_ofx(conn, ofx_path: str, target_account_id: int = None):
         )
     account_id = target_account_id
 
+    acct_row = conn.execute(
+        "SELECT account_type FROM accounts WHERE id=?", (account_id,)
+    ).fetchone()
+    is_credit_card = acct_row is not None and acct_row["account_type"] == "credit_card"
+
     review_repo = ReviewQueueRepository(conn)
     inserted_ids, skipped = ingest_transactions(
         transactions, account_id, os.path.basename(ofx_path),
         TransactionRepository(conn), VendorRuleRepository(conn),
         CategoryRepository(conn), review_repo, ExchangeRateRepository(conn),
+        is_credit_card=is_credit_card,
         skip_statement_check=True,
     )
 
@@ -193,6 +199,53 @@ def ingest_ofx(conn, ofx_path: str, target_account_id: int = None):
     else:
         print("  No LEDGERBAL found — reconciliation skipped.")
 
+    year_month = (
+        ofx_parser.extract_statement_end_date(text)
+        or (transactions[-1].date[:7] if transactions else None)
+    )
+    if year_month:
+        record_snapshot(SnapshotRepository(conn), account_id, year_month, result)
+
+    return inserted_ids, skipped, result.is_clean, result.diff
+
+
+def ingest_qif(conn, qif_path: str, target_account_id: int = None):
+    try:
+        with open(qif_path, encoding="utf-8-sig") as f:
+            text = f.read()
+    except UnicodeDecodeError:
+        with open(qif_path, encoding="latin-1") as f:
+            text = f.read()
+
+    if target_account_id is None:
+        raise ValueError(
+            "QIF imports require an explicit account — pass --account-code <CODE> or "
+            "set target_account_id when calling ingest_qif() directly."
+        )
+    account_id = target_account_id
+
+    acct_row = conn.execute(
+        "SELECT account_type, currency FROM accounts WHERE id=?", (account_id,)
+    ).fetchone()
+    is_credit_card = acct_row is not None and acct_row["account_type"] == "credit_card"
+    currency = (acct_row["currency"] if acct_row else None) or "USD"
+
+    transactions = qif_parser.parse(text, currency=currency)
+    result = qif_parser.reconcile(transactions)
+
+    review_repo = ReviewQueueRepository(conn)
+    inserted_ids, skipped = ingest_transactions(
+        transactions, account_id, os.path.basename(qif_path),
+        TransactionRepository(conn), VendorRuleRepository(conn),
+        CategoryRepository(conn), review_repo, ExchangeRateRepository(conn),
+        is_credit_card=is_credit_card,
+        skip_statement_check=True,
+    )
+
+    print(f"\n=== QIF: {os.path.basename(qif_path)} ===")
+    print(f"Transactions parsed: {len(transactions)}  Inserted: {len(inserted_ids)}  Skipped (duplicates): {skipped}")
+    print("  No balance data in QIF — reconciliation skipped.")
+
     year_month = transactions[-1].date[:7] if transactions else None
     if year_month:
         record_snapshot(SnapshotRepository(conn), account_id, year_month, result)
@@ -202,12 +255,12 @@ def ingest_ofx(conn, ofx_path: str, target_account_id: int = None):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("account_type", choices=["hsbc", "chase_bank", "sapphire", "ofx"])
-    parser.add_argument("file_path", help="Path to the statement file (PDF or OFX)")
+    parser.add_argument("account_type", choices=["hsbc", "chase_bank", "sapphire", "ofx", "qif"])
+    parser.add_argument("file_path", help="Path to the statement file (PDF, OFX, or QIF)")
     parser.add_argument("--year", type=int, default=None)
     parser.add_argument("--start-month", type=int, default=None)
     parser.add_argument("--account-code", default=None,
-                        help="Account code for OFX imports (required for ofx; e.g. US_CHECKING)")
+                        help="Account code for OFX/QIF imports (required; e.g. US_CHECKING)")
     args = parser.parse_args()
 
     conn = get_connection()
@@ -225,6 +278,8 @@ def main():
                         target_account_id=target_account_id)
     elif args.account_type == "ofx":
         ingest_ofx(conn, args.file_path, target_account_id=target_account_id)
+    elif args.account_type == "qif":
+        ingest_qif(conn, args.file_path, target_account_id=target_account_id)
 
     conn.commit()
     conn.close()

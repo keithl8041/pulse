@@ -97,6 +97,72 @@ def detect_ofx(ofx_path: str) -> dict:
     }
 
 
+def detect_qif(qif_path: str) -> dict:
+    """
+    Identify the account type and period from a QIF file.
+
+    Returns the same dict shape as detect_pdf() and detect_ofx(). year and
+    start_month are always None — QIF dates come from the transactions themselves
+    and the parser reads them directly, so the import form hides those fields.
+    """
+    try:
+        try:
+            with open(qif_path, encoding="utf-8-sig") as f:
+                text = f.read()
+        except UnicodeDecodeError:
+            with open(qif_path, encoding="latin-1") as f:
+                text = f.read()
+    except Exception as exc:
+        return _unknown(f"Could not read QIF file: {exc}")
+
+    try:
+        import sys as _sys, os as _os
+        _sys.path.insert(0, _os.path.join(_os.path.dirname(__file__), ".."))
+        from parsers.qif import extract_account_type, extract_date_range
+        qif_type = extract_account_type(text)
+        earliest, latest = extract_date_range(text)
+    except Exception as exc:
+        return _unknown(f"QIF parsing failed: {exc}")
+
+    qif_type_norm = (qif_type or "").strip()
+    if qif_type_norm.lower() in ("bank",):
+        acct_label = "QIF – Checking"
+    elif qif_type_norm.lower() == "ccard":
+        acct_label = "QIF – Credit Card"
+    elif qif_type_norm.lower() == "cash":
+        acct_label = "QIF – Cash"
+    elif qif_type_norm.lower() in ("oth a", "otha"):
+        acct_label = "QIF – Asset"
+    elif qif_type_norm.lower() in ("oth l", "othl"):
+        acct_label = "QIF – Liability"
+    else:
+        acct_label = "QIF"
+
+    period_label = None
+    if latest:
+        try:
+            from datetime import datetime
+            dt = datetime.strptime(latest, "%Y-%m-%d")
+            period_label = dt.strftime("%b %Y")
+        except ValueError:
+            pass
+
+    notes = f"Detected {acct_label}."
+    if period_label:
+        notes += f" Latest transaction: {period_label}."
+
+    return {
+        "account_type":  "qif",
+        "account_label": acct_label,
+        "year":          None,
+        "start_month":   None,
+        "period_label":  period_label,
+        "confidence":    "high" if qif_type else "medium",
+        "notes":         notes,
+        "last4":         None,
+    }
+
+
 def detect_pdf(pdf_path: str) -> dict:
     """
     Identify the statement type and period from the PDF.
@@ -332,7 +398,7 @@ def _run_job(job_id: str) -> None:
         import sys, os as _os
         _os.sys.path.insert(0, _os.path.join(_os.path.dirname(__file__), ".."))
         from persistence.database import get_connection
-        from cli.ingest import ingest_hsbc, ingest_chase_bank, ingest_sapphire, ingest_ofx
+        from cli.ingest import ingest_hsbc, ingest_chase_bank, ingest_sapphire, ingest_ofx, ingest_qif
 
         with closing(get_connection()) as conn:
             acct = job["account_type"]
@@ -348,6 +414,8 @@ def _run_job(job_id: str) -> None:
                 inserted_ids, skipped, reconciled, diff = ingest_sapphire(conn, file_path, year, sm, target_account_id=target_account_id)
             elif acct == "ofx":
                 inserted_ids, skipped, reconciled, diff = ingest_ofx(conn, file_path, target_account_id=target_account_id)
+            elif acct == "qif":
+                inserted_ids, skipped, reconciled, diff = ingest_qif(conn, file_path, target_account_id=target_account_id)
             else:
                 raise ValueError(f"Unknown account type: {acct}")
             conn.commit()
