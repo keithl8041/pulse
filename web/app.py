@@ -551,8 +551,43 @@ def api_edit_transaction(txn_id):
 @app.route("/api/categories/list")
 def api_categories_list():
     with closing(get_connection()) as conn:
-        rows = CategoryRepository(conn).list_all()
-    return jsonify([{"id": r["id"], "name": r["name"]} for r in rows])
+        rows = CategoryRepository(conn).list_all_with_parents()
+    return jsonify([{
+        "id": r["id"],
+        "name": r["name"],
+        "parent_id": r["parent_id"],
+        "parent_name": r["parent_name"],
+        "display_name": f'{r["parent_name"]} - {r["name"]}' if r["parent_name"] else r["name"],
+    } for r in rows])
+
+
+@app.route("/api/categories/add", methods=["POST"])
+def api_add_category():
+    data       = request.get_json() or {}
+    name       = (data.get("name") or "").strip()
+    parent_id  = data.get("parent_id") or None
+    money_type = data.get("money_type") or "expense"
+    if not name:
+        return jsonify({"ok": False, "error": "Name required"}), 400
+    valid_types = ("income", "reimbursement", "loan_repayment", "expense", "transfer")
+    if money_type not in valid_types:
+        return jsonify({"ok": False, "error": "Invalid money type"}), 400
+    try:
+        with closing(get_connection()) as conn:
+            parent_name = None
+            if parent_id:
+                row = conn.execute("SELECT name FROM categories WHERE id=?", (parent_id,)).fetchone()
+                if not row:
+                    return jsonify({"ok": False, "error": "Parent category not found"}), 400
+                parent_name = row["name"]
+            new_id = CategoryRepository(conn).add(name, parent_id, money_type)
+            conn.commit()
+        display_name = f"{parent_name} - {name}" if parent_name else name
+        return jsonify({"ok": True, "id": new_id, "name": name,
+                        "parent_id": parent_id, "parent_name": parent_name,
+                        "display_name": display_name})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
 
 
 @app.route("/api/trips/list")
@@ -568,7 +603,7 @@ def review_queue_view():
         review_repo     = ReviewQueueRepository(conn)
         items_raw       = review_repo.list_open()
         severity_counts = review_repo.count_by_severity()
-        categories      = CategoryRepository(conn).list_all()
+        categories      = CategoryRepository(conn).list_all_with_parents()
         trips           = TripRepository(conn).list_with_totals()
 
     return render_template(

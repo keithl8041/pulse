@@ -299,6 +299,22 @@
     .txn-clickable { cursor: pointer; }
     .txn-clickable:hover { background: var(--c-accent-bg) !important; }
 
+    /* ── Quick-add category modal (shared) ── */
+    .nc-modal-overlay { position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:700;display:flex;align-items:center;justify-content:center; }
+    .nc-modal-card { background:var(--c-card);border:1px solid var(--c-border);border-radius:8px;padding:1.5rem;width:min(400px,94vw);display:flex;flex-direction:column;gap:.9rem; }
+    .nc-modal-header { display:flex;justify-content:space-between;align-items:center; }
+    .nc-modal-title { font-family:'Spectral',serif;font-size:16px;font-weight:600;color:var(--c-text); }
+    .nc-modal-close { background:none;border:none;cursor:pointer;color:var(--c-muted);font-size:16px;padding:2px 6px;border-radius:3px; }
+    .nc-modal-close:hover { color:var(--c-text); }
+    .nc-field-row { display:grid;grid-template-columns:80px 1fr;align-items:center;gap:.5rem; }
+    .nc-field-row label { font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--c-muted); }
+    .nc-field-row input,.nc-field-row select { font-family:'IBM Plex Mono',monospace;font-size:11px;padding:.3rem .5rem;border:1px solid var(--c-border);border-radius:3px;background:var(--c-bg);color:var(--c-text);width:100%; }
+    .nc-preview { font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--c-accent);background:var(--c-accent-bg);border:1px solid var(--c-accent-bd);border-radius:3px;padding:.35rem .6rem;min-height:1.8em; }
+    .nc-error { font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--c-red-t); }
+    .nc-actions { display:flex;gap:.75rem;justify-content:flex-end;border-top:1px solid var(--c-border);padding-top:.9rem; }
+    .nc-add-btn    { font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:600;background:var(--c-green-bg);color:var(--c-green-t);border:1px solid var(--c-green-bd);padding:.4rem 1rem;border-radius:3px;cursor:pointer; }
+    .nc-cancel-btn { font-family:'IBM Plex Mono',monospace;font-size:11px;background:transparent;border:1px solid var(--c-border);color:var(--c-muted);padding:.4rem .9rem;border-radius:3px;cursor:pointer; }
+
     /* ── Shared card ── */
     .card {
       background: var(--c-card);
@@ -464,6 +480,43 @@
       <button class="txm-cancel" onclick="closeTxnModal()">Cancel</button>
     </div>
     <div class="txm-error" id="txm-error" style="display:none"></div>
+  </div>
+</div>
+
+<!-- Quick-add category modal (shared across pages) -->
+<div id="nc-modal-overlay" class="nc-modal-overlay" style="display:none" onclick="if(event.target===this)closeNewCatModal(true)">
+  <div class="nc-modal-card">
+    <div class="nc-modal-header">
+      <span class="nc-modal-title">New category</span>
+      <button class="nc-modal-close" onclick="closeNewCatModal(true)">✕</button>
+    </div>
+    <div class="nc-field-row">
+      <label for="nc-parent">Parent</label>
+      <select id="nc-parent" onchange="updateNcPreview()">
+        <option value="">— top level —</option>
+      </select>
+    </div>
+    <div class="nc-field-row">
+      <label for="nc-name">Name</label>
+      <input id="nc-name" type="text" placeholder="e.g. Contact Lenses"
+             oninput="updateNcPreview()" autocomplete="off">
+    </div>
+    <div class="nc-field-row">
+      <label for="nc-mtype">Money type</label>
+      <select id="nc-mtype">
+        <option value="expense">expense</option>
+        <option value="income">income</option>
+        <option value="transfer">transfer</option>
+        <option value="reimbursement">reimbursement</option>
+        <option value="loan_repayment">loan repayment</option>
+      </select>
+    </div>
+    <div class="nc-preview" id="nc-preview"></div>
+    <div class="nc-error" id="nc-error" style="display:none"></div>
+    <div class="nc-actions">
+      <button type="button" class="nc-cancel-btn" onclick="closeNewCatModal(true)">Cancel</button>
+      <button type="button" class="nc-add-btn" onclick="submitNewCat()">+ Add</button>
+    </div>
   </div>
 </div>
 
@@ -823,8 +876,12 @@
       `;
 
       const catSel = document.getElementById('txm-category');
+      catSel.className = 'txm-select nc-cat-sel';
+      catSel.dataset.prev = t.category_id || '';
+      catSel.onchange = function() { onCatSelectChange(this); };
       catSel.innerHTML = '<option value="">— no category —</option>' +
-        txmCategoriesCache.map(c => `<option value="${c.id}" ${c.id === t.category_id ? 'selected' : ''}>${esc(c.name)}</option>`).join('');
+        txmCategoriesCache.map(c => `<option value="${c.id}" ${c.id === t.category_id ? 'selected' : ''}>${esc(c.display_name || c.name)}</option>`).join('') +
+        '<option value="__new__">+ new category…</option>';
 
       const tripSel = document.getElementById('txm-trip');
       tripSel.innerHTML = '<option value="">— no trip —</option>' +
@@ -874,6 +931,99 @@
       errEl.textContent = 'Save failed: ' + err.message;
       errEl.style.display = 'block';
     });
+  }
+}
+
+  // ── Quick-add category (shared) ───────────────────────────────────────────
+  let ncTriggerEl   = null;
+  let ncTriggerPrev = '';
+
+  function onCatSelectChange(el) {
+    if (el.value === '__new__') {
+      ncTriggerEl   = el;
+      ncTriggerPrev = el.dataset.prev || '';
+      openNewCatModal();
+    } else {
+      el.dataset.prev = el.value;
+    }
+  }
+
+  function openNewCatModal() {
+    const doOpen = cats => {
+      const parentSel = document.getElementById('nc-parent');
+      parentSel.innerHTML = '<option value="">— top level —</option>';
+      cats.filter(c => !c.parent_id).forEach(c => {
+        const opt = document.createElement('option');
+        opt.value = c.id; opt.textContent = c.name;
+        parentSel.appendChild(opt);
+      });
+      document.getElementById('nc-name').value  = '';
+      document.getElementById('nc-mtype').value = 'expense';
+      document.getElementById('nc-error').style.display = 'none';
+      updateNcPreview();
+      document.getElementById('nc-modal-overlay').style.display = 'flex';
+      setTimeout(() => document.getElementById('nc-name').focus(), 50);
+    };
+    if (txmCategoriesCache) { doOpen(txmCategoriesCache); return; }
+    fetch('/api/categories/list').then(r => r.json()).then(d => { txmCategoriesCache = d; doOpen(d); });
+  }
+
+  function closeNewCatModal(revert) {
+    document.getElementById('nc-modal-overlay').style.display = 'none';
+    if (revert && ncTriggerEl) ncTriggerEl.value = ncTriggerPrev;
+    ncTriggerEl = null;
+  }
+
+  function updateNcPreview() {
+    const parentSel  = document.getElementById('nc-parent');
+    const name       = document.getElementById('nc-name').value.trim();
+    const parentName = parentSel.value ? parentSel.options[parentSel.selectedIndex].text : '';
+    const preview    = document.getElementById('nc-preview');
+    if (!name) { preview.textContent = ''; return; }
+    preview.textContent = parentName ? `${parentName} - ${name}` : name;
+  }
+
+  async function submitNewCat() {
+    const name      = document.getElementById('nc-name').value.trim();
+    const parentId  = document.getElementById('nc-parent').value || null;
+    const moneyType = document.getElementById('nc-mtype').value;
+    const errEl     = document.getElementById('nc-error');
+    errEl.style.display = 'none';
+    if (!name) { errEl.textContent = 'Name is required.'; errEl.style.display = 'block'; return; }
+    try {
+      const resp = await fetch('/api/categories/add', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({name, parent_id: parentId ? parseInt(parentId) : null, money_type: moneyType}),
+      });
+      const data = await resp.json();
+      if (!data.ok) { errEl.textContent = data.error || 'Failed to create category.'; errEl.style.display = 'block'; return; }
+      addCategoryOption(data);
+      if (ncTriggerEl) ncTriggerEl.value = data.id;
+      closeNewCatModal(false);
+    } catch {
+      errEl.textContent = 'Network error. Please try again.';
+      errEl.style.display = 'block';
+    }
+  }
+
+  function addCategoryOption(cat) {
+    if (txmCategoriesCache && !txmCategoriesCache.find(c => c.id === cat.id))
+      txmCategoriesCache.push(cat);
+    document.querySelectorAll('.nc-cat-sel').forEach(sel => {
+      if (sel.querySelector(`option[value="${cat.id}"]`)) return;
+      const opt = document.createElement('option');
+      opt.value = cat.id; opt.textContent = cat.display_name;
+      const newOpt = sel.querySelector('option[value="__new__"]');
+      if (newOpt) sel.insertBefore(opt, newOpt); else sel.appendChild(opt);
+    });
+    if (!cat.parent_id) {
+      const parentSel = document.getElementById('nc-parent');
+      if (parentSel && !parentSel.querySelector(`option[value="${cat.id}"]`)) {
+        const opt = document.createElement('option');
+        opt.value = cat.id; opt.textContent = cat.name;
+        parentSel.appendChild(opt);
+      }
+    }
   }
 </script>
 {% block extra_scripts %}{% endblock %}

@@ -341,6 +341,7 @@
 
         <div class="vr-actions">
           {% if r.is_pending %}
+          <button type="button" class="edit-btn" onclick="startEdit({{ r.id }})">✎ Edit</button>
           <form method="post" action="{{ url_for('approve_vendor_rule', rule_id=r.id) }}" style="display:inline">
             <button type="submit" class="approve-btn">✓ Approve</button>
           </form>

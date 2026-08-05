@@ -123,6 +123,14 @@ class CategoryRepository:
     def list_all(self) -> List[sqlite3.Row]:
         return self.conn.execute("SELECT * FROM categories ORDER BY name").fetchall()
 
+    def list_all_with_parents(self) -> List[sqlite3.Row]:
+        return self.conn.execute("""
+            SELECT c.*, p.name as parent_name
+            FROM categories c
+            LEFT JOIN categories p ON c.parent_id = p.id
+            ORDER BY COALESCE(p.name, c.name), c.parent_id IS NOT NULL, c.name
+        """).fetchall()
+
     def list_all_with_counts(self) -> List[sqlite3.Row]:
         return self.conn.execute("""
             SELECT c.*, p.name as parent_name,

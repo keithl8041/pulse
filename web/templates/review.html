@@ -1,4 +1,4 @@
-{% extends "base.html" %}
+﻿{% extends "base.html" %}
 {% block title %}Review Queue — Master Ledger{% endblock %}
 
 {% block extra_head %}
@@ -172,11 +172,14 @@
           {% else %}<span class="conf-low">low</span>{% endif %}
         </span>
 
-        <select class="rq-cat-select" id="cat-{{ item.transaction_id }}">
+        <select class="rq-cat-select nc-cat-sel" id="cat-{{ item.transaction_id }}"
+                onchange="onCatSelectChange(this)"
+                data-prev="{{ item.category_id or '' }}">
           <option value="">— select —</option>
           {% for c in categories %}
-          <option value="{{ c.id }}" {% if item.category_id == c.id %}selected{% endif %}>{{ c.name }}</option>
+          <option value="{{ c.id }}" {% if item.category_id == c.id %}selected{% elif not item.category_id and c.name == 'Miscellaneous' %}selected{% endif %}>{% if c.parent_name %}{{ c.parent_name }} - {% endif %}{{ c.name }}</option>
           {% endfor %}
+          <option value="__new__">+ new category…</option>
         </select>
 
         <div class="mtype-btns" id="mtype-{{ item.transaction_id }}">
@@ -207,11 +210,13 @@
   <!-- Bulk action bar -->
   <div class="bulk-bar" id="bulk-bar">
     <span class="bulk-bar-label" id="bulk-label">0 selected</span>
-    <select class="bulk-cat-sel" id="bulk-cat">
+    <select class="bulk-cat-sel nc-cat-sel" id="bulk-cat"
+            onchange="onCatSelectChange(this)" data-prev="">
       <option value="">— keep existing category —</option>
       {% for c in categories %}
-      <option value="{{ c.id }}">{{ c.name }}</option>
+      <option value="{{ c.id }}">{% if c.parent_name %}{{ c.parent_name }} - {% endif %}{{ c.name }}</option>
       {% endfor %}
+      <option value="__new__">+ new category…</option>
     </select>
     <div class="bulk-mtype" title="Optional — leave none selected to keep each row's own money type unchanged">
       <button class="bulk-mtype-btn exp" onclick="setBulkMtype('expense',this)">Exp</button>
@@ -247,11 +252,13 @@
       </div>
       <div class="rm-field-row">
         <label>Category</label>
-        <select id="rm-category">
+        <select id="rm-category" class="nc-cat-sel"
+                onchange="onCatSelectChange(this)" data-prev="">
           <option value="">— uncategorized —</option>
           {% for cat in categories %}
-          <option value="{{ cat.id }}">{{ cat.name }}</option>
+          <option value="{{ cat.id }}">{% if cat.parent_name %}{{ cat.parent_name }} - {% endif %}{{ cat.name }}</option>
           {% endfor %}
+          <option value="__new__">+ new category…</option>
         </select>
       </div>
       <div class="rm-field-row">
@@ -312,7 +319,7 @@
       row.remove();
       updateCounts(data.remaining);
       applyFilters();
-      checkRuleSuggestion(desc, catId, mtype);
+      checkRuleSuggestion(txnId, desc, catId, mtype);
     }).catch(() => { row.classList.remove('resolving'); btn.textContent = '✓ Resolve'; });
   }
 
@@ -320,17 +327,19 @@
   let rmMtype   = 'expense';
   let rmMatches = [];
 
-  function checkRuleSuggestion(desc, catId, mtype) {
+  function checkRuleSuggestion(resolvedTxnId, desc, catId, mtype) {
     if (!desc) return;
     const pattern = desc.trim();
     Promise.all([
       fetch(`/api/review/rule-preview?pattern=${encodeURIComponent(pattern)}&match_type=exact`).then(r => r.json()),
       fetch(`/api/review/rule-preview?pattern=${encodeURIComponent(pattern)}&match_type=contains`).then(r => r.json()),
     ]).then(([exact, contains]) => {
-      if (exact.count > 0 && exact.count === contains.count) {
-        openRuleModal(pattern, catId, mtype, exact, 'exact');
-      } else if (contains.count > 0) {
-        openRuleModal(pattern, catId, mtype, contains, 'contains');
+      const filteredExact    = (exact.matches    || []).filter(m => m.txn_id !== resolvedTxnId);
+      const filteredContains = (contains.matches || []).filter(m => m.txn_id !== resolvedTxnId);
+      if (filteredExact.length > 0 && filteredExact.length === filteredContains.length) {
+        openRuleModal(pattern, catId, mtype, {matches: filteredExact, count: filteredExact.length}, 'exact');
+      } else if (filteredContains.length > 0) {
+        openRuleModal(pattern, catId, mtype, {matches: filteredContains, count: filteredContains.length}, 'contains');
       }
     }).catch(console.error);
   }
