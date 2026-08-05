@@ -1,35 +1,47 @@
-# PULSE — Personal Unified Ledger & Spending Engine
+﻿# PULSE — Personal Unified Ledger & Spending Engine
 
-Turn bank statement PDFs into a reconciled, categorized, multi-currency
-personal ledger — local-first, SQLite-backed, no cloud, no accounts.
+> **Fork of [ashik-bekal/pulse](https://github.com/ashik-bekal/pulse)** — extends the original with OFX/QFX and QIF import, smart rule suggestions, vendor rule editing, sub-categories, and review queue UX improvements.
 
-The core discipline: **every statement must tie out exactly** against its
-own printed balances. If a parsed month doesn't reconcile to the penny,
-PULSE says so instead of silently absorbing the gap — so your ledger is
-provably complete, not approximately right.
+Turn bank statement PDFs (and OFX/QIF exports) into a reconciled, categorized,
+multi-currency personal ledger — local-first, SQLite-backed, no cloud, no accounts.
+
+The core discipline: **every statement must tie out exactly** against its own
+printed balances. If a parsed month doesn't reconcile to the penny, PULSE says
+so instead of silently absorbing the gap — so your ledger is provably complete,
+not approximately right.
 
 ## Features
 
-- **Statement parsing** for three PDF formats: HSBC UK current accounts,
-  Chase checking/savings (combined statements split per account), and
-  Chase credit cards (incl. three-line FX breakouts with exchange rates)
-- **Exact reconciliation** per statement: opening balance walked through
-  every transaction must reproduce each printed checkpoint and the
-  closing balance; gaps and unverified periods are surfaced on the dashboard
+- **Statement parsing** for five formats:
+  - HSBC UK current accounts (PDF)
+  - Chase checking/savings combined statements (PDF, split per account)
+  - Chase Sapphire / credit cards (PDF, incl. three-line FX breakouts)
+  - **OFX/QFX** — any bank that exports Open Financial Exchange files
+  - **QIF** — Quicken Interchange Format, with UK DD/MM/YYYY date handling
+- **Exact reconciliation** per statement: opening balance walked through every
+  transaction must reproduce each printed checkpoint and the closing balance;
+  gaps and unverified periods are surfaced on the dashboard
 - **Multi-currency**: native, settled, and reporting (GBP) amounts per
   transaction, with monthly exchange rates
-- **Auto-categorization** via vendor rules (contains/exact/regex), with a
-  review queue for low-confidence matches and auto-suggested rules that
-  wait for your approval before being applied
-- **Duplicate-safe imports**: re-uploading overlapping statements skips
-  what's already present — while same-day repeat purchases are kept
-- **Web UI**: dashboard (balances, statement coverage, net worth),
-  transactions with filters/bulk actions/running totals, stacked
-  spend-by-category analysis with drill-down, trips, and a shared edit
-  modal (category/money type/trip — never the statement's own figures)
-- **Async PDF import**: drag-and-drop several statements, auto-detection
-  of format and target account by account number, background jobs with
-  per-file reconciliation status
+- **Auto-categorization** via vendor rules (contains/exact/regex), with a review
+  queue for low-confidence matches
+- **Smart rule suggestions**: after resolving a review item the app proposes a
+  vendor rule to cover similar open transactions — skipped automatically when
+  the item is unique
+- **Vendor rule management**: inline edit, approve/reject pending rules, and
+  bulk approve/delete from the Vendor Rules page
+- **Sub-categories**: categories can have a parent; displayed and grouped as
+  "Parent - Child" throughout the UI
+- **Quick-add category**: any category dropdown has a "+ new category..." option
+  that opens an inline modal without leaving the page
+- **Duplicate-safe imports**: re-uploading overlapping statements skips what's
+  already present — while same-day repeat purchases are kept
+- **Web UI**: dashboard (balances, statement coverage, net worth), transactions
+  with filters/bulk actions/running totals, stacked spend-by-category analysis
+  with drill-down, trips, and a shared edit modal
+- **Async import**: drag-and-drop several statements, auto-detection of format
+  and target account by account number, background jobs with per-file
+  reconciliation status
 
 ## Quickstart
 
@@ -47,6 +59,8 @@ Import statements from the UI (Import button) or the CLI:
 python3 cli/ingest.py hsbc /path/to/statement.pdf
 python3 cli/ingest.py chase_bank /path/to/statement.pdf --year 2025 --start-month 5
 python3 cli/ingest.py sapphire /path/to/statement.pdf --year 2025 --start-month 5
+python3 cli/ingest.py ofx /path/to/export.ofx
+python3 cli/ingest.py qif /path/to/export.qif
 ```
 
 ## Configuration
@@ -65,14 +79,13 @@ All settings are environment variables with safe local defaults — see
 
 ## Security model
 
-PULSE is a **single-user, local-first** app: there is no authentication
-layer. It binds to `127.0.0.1` by default and should stay there. If you
-must reach it remotely, put it behind a reverse proxy that provides
-authentication (and TLS), and set `PULSE_SECRET_KEY`.
+PULSE is a **single-user, local-first** app: there is no authentication layer.
+It binds to `127.0.0.1` by default and should stay there. If you must reach it
+remotely, put it behind a reverse proxy that provides authentication (and TLS),
+and set `PULSE_SECRET_KEY`.
 
-Your financial data never leaves your machine: no telemetry, no external
-calls. The `.gitignore` blocks databases and statement PDFs from ever
-being committed.
+Your financial data never leaves your machine: no telemetry, no external calls.
+The `.gitignore` blocks databases and statement PDFs from ever being committed.
 
 ## Production notes
 
@@ -84,13 +97,13 @@ PULSE_SECRET_KEY=$(python3 -c "import secrets; print(secrets.token_hex(32))") \
   gunicorn -w 2 -b 127.0.0.1:8000 web.app:app
 ```
 
-SQLite in WAL mode handles this app's single-user concurrency fine; back
-up by copying `data/ledger.db` while the app is idle.
+SQLite in WAL mode handles this app's single-user concurrency fine; back up by
+copying `data/ledger.db` while the app is idle.
 
 ## Architecture
 
 ```
-parsers/       pure text -> RawTransaction converters + per-format reconcile()
+parsers/       pure text/OFX/QIF -> RawTransaction converters + per-format reconcile()
 domain/        models + categorization engine (pure functions, no I/O)
 services/      ingestion (categorize + persist + flag), FX, reconciliation
 persistence/   the ONLY place SQL lives (repository per aggregate)
