@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from flask import Flask, render_template, request, redirect, url_for, jsonify
 from werkzeug.utils import secure_filename
-from web.import_service import TEMP_DIR, detect_pdf, detect_ofx, start_job, get_jobs
+from web.import_service import TEMP_DIR, detect_pdf, detect_ofx, detect_qif, start_job, get_jobs
 
 from persistence.database import get_connection
 from persistence.repositories import (
@@ -877,20 +877,29 @@ def api_import_detect():
         file_ext = "pdf"
     elif header[:10].lstrip(b"\xef\xbb\xbf").startswith((b"OFXHEADER", b"<OFX", b"<?xml", b"<?OFX")):
         file_ext = "ofx"
+    elif header.lstrip(b"\xef\xbb\xbf").startswith(b"!"):
+        file_ext = "qif"
     else:
-        # Also accept files whose name ends in .ofx/.qfx even if the leading
-        # bytes don't match the patterns above (some banks omit the header).
+        # Also accept files whose name ends in .ofx/.qfx/.qif even if the
+        # leading bytes don't match the patterns above (some banks omit the header).
         ext = (uploaded.filename or "").rsplit(".", 1)[-1].lower()
         if ext in ("ofx", "qfx"):
             file_ext = "ofx"
+        elif ext == "qif":
+            file_ext = "qif"
         else:
-            return jsonify({"ok": False, "error": "Unrecognised file type — upload a PDF, OFX, or QFX file"}), 400
+            return jsonify({"ok": False, "error": "Unrecognised file type — upload a PDF, OFX, QFX, or QIF file"}), 400
 
     temp_id  = str(uuid.uuid4())
     tmp_path = os.path.join(TEMP_DIR, temp_id + "." + file_ext)
     uploaded.save(tmp_path)
 
-    detection = detect_ofx(tmp_path) if file_ext == "ofx" else detect_pdf(tmp_path)
+    if file_ext == "ofx":
+        detection = detect_ofx(tmp_path)
+    elif file_ext == "qif":
+        detection = detect_qif(tmp_path)
+    else:
+        detection = detect_pdf(tmp_path)
 
     # Auto-match a specific account by last4. For PDF parsers we also filter by
     # statement_format so two accounts at different banks with the same last4
@@ -901,7 +910,7 @@ def api_import_detect():
     last4 = detection.pop("last4", None)
     if last4:
         with closing(get_connection()) as conn:
-            if file_ext == "ofx":
+            if file_ext in ("ofx", "qif"):
                 ofx_rows = conn.execute(
                     "SELECT id FROM accounts WHERE account_number_last4=? AND is_active=1",
                     (last4,),
@@ -977,11 +986,11 @@ def api_import_queue():
     except (ValueError, AttributeError, TypeError):
         return jsonify({"ok": False, "error": "Invalid temp_id"}), 400
 
-    if account_type not in ("hsbc", "chase_bank", "sapphire", "ofx"):
+    if account_type not in ("hsbc", "chase_bank", "sapphire", "ofx", "qif"):
         return jsonify({"ok": False, "error": "Unknown account_type"}), 400
 
     file_ext = data.get("file_ext", "pdf")
-    if file_ext not in ("pdf", "ofx"):
+    if file_ext not in ("pdf", "ofx", "qif"):
         file_ext = "pdf"
 
     tmp_path = os.path.join(TEMP_DIR, temp_id + "." + file_ext)
