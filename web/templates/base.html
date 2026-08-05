@@ -403,9 +403,9 @@
          ondragleave="this.classList.remove('drag-over')"
          ondrop="event.preventDefault();this.classList.remove('drag-over');handleFiles(event.dataTransfer.files)">
       <div class="imp-dropzone-icon">↧</div>
-      <div class="imp-dropzone-text">Drop PDF or OFX statements here or <span>click to browse</span></div>
+      <div class="imp-dropzone-text">Drop PDF, OFX, or QIF statements here or <span>click to browse</span></div>
     </div>
-    <input type="file" id="imp-file-input" accept=".pdf,.ofx,.qfx" multiple style="display:none"
+    <input type="file" id="imp-file-input" accept=".pdf,.ofx,.qfx,.qif" multiple style="display:none"
            onchange="handleFiles(this.files)">
 
     <!-- File cards -->
@@ -488,7 +488,7 @@
   const cards = {};
   let pollTimer = null;
 
-  const FORMAT_LABELS = { hsbc: 'HSBC UK', chase_bank: 'Chase Checking / Savings', sapphire: 'Chase Sapphire Reserve', ofx: 'OFX / QFX', null: 'OFX / Manual' };
+  const FORMAT_LABELS = { hsbc: 'HSBC UK', chase_bank: 'Chase Checking / Savings', sapphire: 'Chase Sapphire Reserve', ofx: 'OFX / QFX', qif: 'QIF', null: 'OFX / Manual' };
 
   // Fetched once and cached — every card's account dropdown reads from this
   // instead of each card making its own round-trip.
@@ -534,7 +534,7 @@
 
   function handleFiles(fileList) {
     for (const file of fileList) {
-      if (!/\.(pdf|ofx|qfx)$/i.test(file.name)) continue;
+      if (!/\.(pdf|ofx|qfx|qif)$/i.test(file.name)) continue;
       const id = Math.random().toString(36).slice(2);
       const el = buildCard(id, file.name);
       cards[id] = { state: 'detecting', filename: file.name, tempId: null, element: el };
@@ -592,8 +592,8 @@
         cards[id].fileExt  = data.file_ext || 'pdf';
         cards[id].state    = 'detected';
 
-        // OFX dates come from the file itself — Year/Month inputs are not needed.
-        if (data.file_ext === 'ofx') {
+        // OFX/QIF dates come from the file itself — Year/Month inputs are not needed.
+        if (data.file_ext === 'ofx' || data.file_ext === 'qif') {
           const yearEl  = document.getElementById('fc-year-'  + id);
           const monthEl = document.getElementById('fc-month-' + id);
           if (yearEl?.parentElement)  yearEl.parentElement.style.display  = 'none';
@@ -615,7 +615,7 @@
           if (!select) return;
           if (data.matched_account_id) {
             select.value = String(data.matched_account_id);
-          } else if (data.account_type && data.account_type !== 'ofx') {
+          } else if (data.account_type && data.account_type !== 'ofx' && data.account_type !== 'qif') {
             const candidates = accounts.filter(a => a.format === data.account_type);
             if (candidates.length === 1) select.value = String(candidates[0].id);
           }
@@ -648,10 +648,10 @@
       setStatus(id, '⚠ Select an account before importing — detection could not identify this statement', 'warn');
       return;
     }
-    // For OFX files the import parser comes from the file (always 'ofx'),
-    // not from the account's PDF statement_format (which may be null).
-    const acctType = card.fileExt === 'ofx'
-      ? 'ofx'
+    // For OFX/QIF files the import parser comes from the file, not from the
+    // account's PDF statement_format (which may be null for those accounts).
+    const acctType = (card.fileExt === 'ofx' || card.fileExt === 'qif')
+      ? card.fileExt
       : (allAccountsCache || []).find(a => a.id === targetAccountId)?.format;
     if (!acctType) {
       setStatus(id, '✗ Could not resolve the selected account\'s statement format — try re-opening the import screen', 'err');
