@@ -24,9 +24,19 @@ Key differences from PDF parsers:
   exists (nothing to check).
 """
 import io
+import warnings
 from typing import List, Optional
 
 from domain.models import RawTransaction, ReconciliationResult
+
+# ofxparse uses BeautifulSoup's html.parser on OFX 2.x XML files, which
+# triggers XMLParsedAsHTMLWarning in bs4 4.x. The parse works correctly;
+# suppress the noise rather than adding lxml as a hard dependency.
+try:
+    from bs4 import XMLParsedAsHTMLWarning
+    warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
+except ImportError:
+    pass  # older bs4 — warning doesn't exist
 
 
 def _ofx(text: str):
